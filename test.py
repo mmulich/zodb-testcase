@@ -9,6 +9,19 @@ from persistent.mapping import PersistentMapping
 from BTrees.OOBTree import OOBTree
 from ZODB import DB
 
+
+class Root(OOBTree):
+    """Root class only to be used at the root of the DB
+    The path on the root object is the filesystem path location.
+
+    """
+
+    def __init__(self, name, path):
+        super(Root, self).__init__()
+        self.name = name
+        self.path = path
+
+
 class Folder(PersistentMapping):
     """A folder implementation..."""
 
@@ -25,7 +38,9 @@ class File(Persistent):
         super(File, self).__init__()
         self.name = name
         self.path = path
-
+        filepath = os.path.join(path, name)
+        with open(filepath, 'r') as file:
+            self.content = file.read()
 
 def traverse(context, path=[]):
     for i in path:
@@ -40,9 +55,9 @@ def init_db(context, args):
             split_path.pop(0)
         subcontext = traverse(context, split_path)
         for file in files:
-            subcontext[file] = File(file, os.path.join(path, file))
+            subcontext[file] = File(file, path)
         for dir in dirs:
-            subcontext[dir] = Folder(dir, os.path.join(path, dir))
+            subcontext[dir] = Folder(dir, path)
     transaction.commit()
 
 def list_db(context, args):
@@ -50,17 +65,33 @@ def list_db(context, args):
     for name in context:
         print(name)
 
+def compare_db(context, args):
+    """Compare the contents"""
+    bad_compares = []
+    for obj in context.values():
+        if not isinstance(obj, File):
+            continue
+        filepath = os.path.join(obj.path, obj.name)
+        with open(filepath, 'r') as file:
+            file_content = file.read()
+            if file_content == obj.content:
+                bad_compares.append(filepath)
+    print('Bad comparisons:')
+    print('\n'.join(bad_compares))
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='ZODB bridge test script')
     v_major, v_minor = sys.version_info.major, sys.version_info.minor
-    parser.add_argument('-d', '--db-file',
-                        default='data-py{}.{}.fs'.format(v_major, v_minor),
+    default_db = os.path.join('.', 'data-py{}.{}.fs'.format(v_major, v_minor))
+    parser.add_argument('-d', '--db-file', default=default_db,
                         help="Path to the database file")
     subparsers = parser.add_subparsers()
     init_parser = subparsers.add_parser('init')
     init_parser.set_defaults(func=init_db)
     list_parser = subparsers.add_parser('list')
     list_parser.set_defaults(func=list_db)
+    compare_parser = subparsers.add_parser('compare')
+    compare_parser.set_defaults(func=compare_db)
 
     args = parser.parse_args(argv)
 
@@ -68,7 +99,13 @@ def main(argv=None):
     db_conn = db.open()
     db_root = db_conn.root()
     if 'test' not in db_root:
-        root = db_root['test'] = OOBTree()
+        root_path = args.db_file.split(os.sep)[:-1]
+        if root_path:
+            root_path = os.path.join(*root_path)
+            root_path = os.path.abspath(root_path)
+        else:
+            root_path = os.path.abspath('.')
+        root = db_root['test'] = Root('test', root_path)
     else:
         root = db_root['test']
 
