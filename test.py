@@ -6,20 +6,26 @@ import argparse
 import transaction
 from persistent import Persistent
 from persistent.mapping import PersistentMapping
-from BTrees.OOBTree import OOBTree
 from ZODB import DB
 
 
-class Root(OOBTree):
-    """Root class only to be used at the root of the DB
-    The path on the root object is the filesystem path location.
+_root = None
 
-    """
+def set_root(root):
+    """Set the root object"""
+    global _root
+    _root = root
 
-    def __init__(self, name, path):
-        super(Root, self).__init__()
-        self.name = name
-        self.path = path
+def get_root():
+    """Return the root object"""
+    global _root
+    return _root
+
+def get_file_content(name, path):
+    root_path = get_root().path
+    filepath = os.path.join(root_path, path, name)
+    with open(filepath, 'r') as file:
+        return file.read()
 
 
 class Folder(PersistentMapping):
@@ -38,9 +44,7 @@ class File(Persistent):
         super(File, self).__init__()
         self.name = name
         self.path = path
-        filepath = os.path.join(path, name)
-        with open(filepath, 'r') as file:
-            self.content = file.read()
+        self.content = get_file_content(name, path)
 
 def traverse(context, path=[]):
     for i in path:
@@ -49,10 +53,18 @@ def traverse(context, path=[]):
 
 def init_db(context, args):
     """Walk over the filesystem to place file entries in the database."""
-    for path, dirs, files in os.walk('.'):
-        split_path = path.split(os.sep)
-        if split_path[0] == '.':
-            split_path.pop(0)
+    # Assign the root with the part location
+    root_path = args.location.split(os.sep)
+    if root_path:
+        root_path = os.path.join(*root_path)
+        root_path = os.path.abspath(root_path)
+    else:
+        root_path = os.path.abspath('.')
+    context.path = root_path
+    for path, dirs, files in os.walk(root_path):
+        path = path[len(root_path):]  # remove the root
+        path = path.lstrip(os.sep)
+        split_path = [i for i in path.split(os.sep) if i]
         subcontext = traverse(context, split_path)
         for file in files:
             subcontext[file] = File(file, path)
@@ -68,10 +80,11 @@ def list_db(context, args):
 def compare_db(context, args):
     """Compare the contents"""
     bad_compares = []
+    root = get_root()
     for obj in context.values():
         if not isinstance(obj, File):
             continue
-        filepath = os.path.join(obj.path, obj.name)
+        filepath = os.path.join(root.path, obj.path, obj.name)
         with open(filepath, 'r') as file:
             file_content = file.read()
             if file_content == obj.content:
@@ -88,6 +101,8 @@ def main(argv=None):
     subparsers = parser.add_subparsers()
     init_parser = subparsers.add_parser('init')
     init_parser.set_defaults(func=init_db)
+    init_parser.add_argument('-l', '--location', default='.',
+                             help="filesystem location to initialize from")
     list_parser = subparsers.add_parser('list')
     list_parser.set_defaults(func=list_db)
     compare_parser = subparsers.add_parser('compare')
@@ -99,15 +114,10 @@ def main(argv=None):
     db_conn = db.open()
     db_root = db_conn.root()
     if 'test' not in db_root:
-        root_path = args.db_file.split(os.sep)[:-1]
-        if root_path:
-            root_path = os.path.join(*root_path)
-            root_path = os.path.abspath(root_path)
-        else:
-            root_path = os.path.abspath('.')
-        root = db_root['test'] = Root('test', root_path)
+        root = db_root['test'] = Folder('test', None)
     else:
         root = db_root['test']
+    set_root(root)
 
     args.func(root, args)
     db_conn.close()
